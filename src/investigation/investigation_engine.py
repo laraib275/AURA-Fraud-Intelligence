@@ -35,7 +35,7 @@ class InvestigationEngine:
         "customer_merchant_distance_km",
     ]
 
-    FINAL_THRESHOLD = 0.22
+    
 
     def __init__(self):
         # Project-relative paths
@@ -52,10 +52,17 @@ class InvestigationEngine:
             / "sparkov_features.parquet"
         )
 
+        self.risk_data_path = (
+             PROJECT_ROOT
+            / "data"
+            / "processed"
+            / "sparkov_risk_engine.parquet"
+        )
+
         # Load model and dataset once
         self.model = joblib.load(self.model_path)
         self.df = pd.read_parquet(self.data_path)
-
+        self.risk_df = pd.read_parquet(self.risk_data_path)
         # Reuse these objects for every investigation
         self.imputer = self.model.named_steps["imputer"]
         self.rf_model = self.model.named_steps["model"]
@@ -63,14 +70,7 @@ class InvestigationEngine:
             self.rf_model
         )
 
-    def _get_risk_band(self, probability):
-        if probability >= 0.50:
-            return "HIGH", "ESCALATE FOR INVESTIGATION"
-
-        if probability >= self.FINAL_THRESHOLD:
-            return "MEDIUM", "SEND TO REVIEW QUEUE"
-
-        return "LOW", "APPROVE"
+   
 
     def _generate_reasons(self, row):
         reasons = []
@@ -177,6 +177,31 @@ class InvestigationEngine:
             self.df["trans_num"] == transaction_id
         ]
 
+
+
+        risk_matches = self.risk_df[
+            self.risk_df["trans_num"] == transaction_id
+        ]
+
+        if risk_matches.empty:
+            return {
+                "error": (
+                f"Risk-engine record for transaction "
+                f"{transaction_id} not found."
+                )
+        }
+
+        if len(risk_matches) > 1:
+            return {
+                "error": (
+                f"Multiple risk-engine records found for "
+                f"{transaction_id}."
+            )
+        }
+        
+        risk_row = risk_matches.iloc[0]
+        
+        
         if matches.empty:
             return {
                 "error": (
@@ -201,14 +226,29 @@ class InvestigationEngine:
             self.model.predict_proba(features)[0, 1]
         )
 
-        risk_score = round(
-            fraud_probability * 100,
-            2,
+        risk_score = float(
+            risk_row["final_risk_score"]
         )
 
-        risk_band, action = self._get_risk_band(
-            fraud_probability
+        risk_band = str(
+            risk_row["risk_band"]
+        ).upper()
+
+        investigation_flag = bool(
+            risk_row["investigation_flag"]
         )
+
+        if risk_band == "CRITICAL":
+            action = "IMMEDIATE INVESTIGATION"
+
+        elif risk_band == "HIGH":
+            action = "ESCALATE FOR INVESTIGATION"
+
+        elif risk_band == "MEDIUM":
+            action = "SEND TO REVIEW QUEUE"
+
+        else:
+            action = "APPROVE"
 
         reasons = self._generate_reasons(row)
 
@@ -218,14 +258,48 @@ class InvestigationEngine:
 
         return {
             "transaction_id": transaction_id,
+
             "transaction_time": str(
                 row["transaction_time"]
             ),
+
             "amount": float(row["amt"]),
+
+            # Machine-learning model output
             "fraud_probability": fraud_probability,
-            "risk_score": risk_score,
+
+            # Final AURA risk-engine output
+            "risk_score": round(risk_score, 2),
             "risk_band": risk_band,
+            "investigation_flag": investigation_flag,
             "recommended_action": action,
+
+            # Risk-engine components
+            "amount_risk": float(
+                risk_row["amount_risk"]
+            ),
+
+            "velocity_risk": float(
+                risk_row["velocity_risk"]
+            ),
+
+            "novelty_risk": float(
+                risk_row["novelty_risk"]
+            ),
+
+            "behavioural_risk_score": float(
+                risk_row["behavioural_risk_score"]
+            ),
+
+            "anomaly_score": float(
+                risk_row["anomaly_score"]
+            ),
+
+            "anomaly_risk": float(
+                risk_row["anomaly_risk"]
+            ),
+
+            # Explainability
             "investigation_reasons": reasons,
             "top_risk_factors": shap_factors,
         }
