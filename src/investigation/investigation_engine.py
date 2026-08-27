@@ -5,6 +5,8 @@ import numpy as np
 import pandas as pd
 import shap
 
+from src.graph.graph_analyzer import GraphAnalyzer
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -69,6 +71,7 @@ class InvestigationEngine:
         self.shap_explainer = shap.TreeExplainer(
             self.rf_model
         )
+        self.graph_analyzer = GraphAnalyzer()
 
    
 
