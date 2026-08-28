@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
 
+from src.investigation.ai_investigator import AIInvestigator
 from src.investigation.investigation_engine import InvestigationEngine
-
 
 app = FastAPI(
     title="AURA Fraud Intelligence API",
@@ -9,9 +9,18 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Load the investigation engine once when the API starts
-engine = InvestigationEngine()
 
+# ---------------------------------------------------------
+# LOAD ENGINES ONCE WHEN API STARTS
+# ---------------------------------------------------------
+
+engine = InvestigationEngine()
+ai_investigator = AIInvestigator()
+
+
+# ---------------------------------------------------------
+# ROOT
+# ---------------------------------------------------------
 
 @app.get("/")
 def root():
@@ -22,12 +31,20 @@ def root():
     }
 
 
+# ---------------------------------------------------------
+# HEALTH CHECK
+# ---------------------------------------------------------
+
 @app.get("/health")
 def health():
     return {
         "status": "healthy"
     }
 
+
+# ---------------------------------------------------------
+# TRANSACTION INVESTIGATION
+# ---------------------------------------------------------
 
 @app.get("/investigate/{transaction_id}")
 def investigate(transaction_id: str):
@@ -37,9 +54,38 @@ def investigate(transaction_id: str):
     )
 
     if "error" in report:
+
         raise HTTPException(
             status_code=404,
             detail=report["error"],
         )
+
+    return report
+
+
+# ---------------------------------------------------------
+# AI INVESTIGATION REPORT
+# ---------------------------------------------------------
+
+@app.get("/investigate/{transaction_id}/ai-report")
+def ai_investigation_report(transaction_id: str):
+
+    # First obtain the normal AURA investigation
+    investigation = engine.investigate_transaction(
+        transaction_id
+    )
+
+    # Transaction not found / investigation error
+    if "error" in investigation:
+
+        raise HTTPException(
+            status_code=404,
+            detail=investigation["error"],
+        )
+
+    # Generate AI Investigator report
+    report = ai_investigator.generate_report(
+        investigation
+    )
 
     return report

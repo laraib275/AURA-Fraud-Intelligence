@@ -32,7 +32,9 @@ st.set_page_config(
 # ============================================================
 # SESSION STATE
 # ============================================================
-
+if "ai_report" not in st.session_state:
+    st.session_state.ai_report = None
+    
 if "investigations" not in st.session_state:
     st.session_state.investigations = []
 
@@ -1463,6 +1465,34 @@ elif page == "Investigations":
                         st.session_state.last_report = report
                         record_investigation(report)
 
+
+                                                # ====================================================
+                        # AI INVESTIGATOR
+                        # ====================================================
+
+                        try:
+                            ai_response = requests.get(
+                                f"{API_URL}/investigate/"
+                                f"{transaction_id.strip()}/ai-report",
+                                timeout=60,
+                            )
+
+                            if ai_response.status_code == 200:
+                                st.session_state.ai_report = (
+                                    ai_response.json()
+                                )
+                            else:
+                                st.session_state.ai_report = None
+                                st.warning(
+                                    "AI Investigator report could not be generated."
+                                )
+
+                        except requests.exceptions.RequestException:
+                            st.session_state.ai_report = None
+                            st.warning(
+                                "Could not connect to the AI Investigator endpoint."
+                            )
+
                 except requests.exceptions.RequestException as exc:
 
                     st.error(
@@ -1486,6 +1516,135 @@ elif page == "Investigations":
         render_investigation(
             st.session_state.last_report
         )
+        
+
+                # ============================================================
+        # AURA AI INVESTIGATOR
+        # ============================================================
+
+        if st.session_state.get("ai_report"):
+
+            ai = st.session_state.ai_report
+
+            st.markdown(
+                """
+                <div class="section-label">
+                    AI Investigator
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            st.markdown(
+                f"""
+                <div class="detail-card">
+                    <div class="detail-label">
+                        Executive Summary
+                    </div>
+                    <div class="detail-value">
+                        {ai.get("executive_summary", "Not available")}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            st.markdown(
+                """
+                <div class="section-label">
+                    Risk Interpretation
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            for item in ai.get(
+                "risk_interpretation",
+                []
+            ):
+
+                st.markdown(
+                    f"""
+                    <div class="reason-item">
+                        {item}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+            st.markdown(
+                """
+                <div class="section-label">
+                    Investigation Evidence
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            for item in ai.get(
+                "evidence",
+                []
+            ):
+
+                description = item.get(
+                    "description",
+                    ""
+                )
+
+                st.markdown(
+                    f"""
+                    <div class="reason-item">
+                        {description}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+            st.markdown(
+                """
+                <div class="section-label">
+                    Investigator Conclusion
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            st.markdown(
+                f"""
+                <div class="detail-card">
+                    <div class="detail-value">
+                        {
+                            ai.get(
+                                "investigator_conclusion",
+                                "Not available"
+                            )
+                        }
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            st.markdown(
+                """
+                <div class="section-label">
+                    Recommended Action
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            st.markdown(
+                f"""
+                <div class="reason-item">
+                    {ai.get(
+                        "recommended_action",
+                        "Not available"
+                    )}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
     else:
 
