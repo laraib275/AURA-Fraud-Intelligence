@@ -2,15 +2,21 @@ class AIInvestigator:
     """
     AURA AI Investigator.
 
-    Converts the structured investigation output produced by
-    InvestigationEngine into a human-readable investigation report.
+    Generates an evidence-based investigation report using:
+    1. Deterministic investigation results
+    2. Retrieved fraud knowledge from RAG
+    3. Groq LLM analysis
 
-    This first version is deterministic and evidence-based.
-    It does not invent information that is not present in the
-    investigation result.
+    The LLM is instructed to use only the supplied evidence
+    and retrieved knowledge and not invent transaction facts.
     """
 
-    def generate_report(self, investigation):
+    def generate_report(
+        self,
+        investigation,
+        rag_context=None,
+        llm=None,
+    ):
 
         if not investigation:
             return {
@@ -19,6 +25,10 @@ class AIInvestigator:
 
         if "error" in investigation:
             return investigation
+
+        # ---------------------------------------------------------
+        # BASIC INVESTIGATION DATA
+        # ---------------------------------------------------------
 
         transaction_id = investigation.get(
             "transaction_id"
@@ -66,7 +76,7 @@ class AIInvestigator:
         )
 
         # ---------------------------------------------------------
-        # BUILD SUMMARY
+        # DETERMINISTIC REPORT
         # ---------------------------------------------------------
 
         if risk_band == "CRITICAL":
@@ -172,17 +182,9 @@ class AIInvestigator:
 
         for factor in shap_factors:
 
-            feature = factor.get(
-                "feature"
-            )
-
-            value = factor.get(
-                "value"
-            )
-
-            shap_value = factor.get(
-                "shap_value"
-            )
+            feature = factor.get("feature")
+            value = factor.get("value")
+            shap_value = factor.get("shap_value")
 
             shap_evidence.append({
                 "feature": feature,
@@ -237,23 +239,85 @@ class AIInvestigator:
             )
 
         # ---------------------------------------------------------
-        # FINAL REPORT
+        # BASE REPORT
         # ---------------------------------------------------------
 
-        return {
+        report = {
             "transaction_id": transaction_id,
-
             "executive_summary": summary,
-
             "risk_interpretation": risk_interpretation,
-
             "evidence": evidence,
-
             "top_risk_factors": shap_evidence,
-
             "graph_analysis": graph_summary,
-
             "recommended_action": recommended_action,
-
             "investigator_conclusion": conclusion,
         }
+
+        # ---------------------------------------------------------
+        # GROQ AI ANALYSIS
+        # ---------------------------------------------------------
+
+        if llm is not None:
+
+            system_prompt = """
+You are AURA, an AI fraud investigation assistant.
+
+Your job is to analyze an already-generated fraud investigation.
+
+IMPORTANT RULES:
+
+1. Do not invent transaction facts.
+2. Do not change the supplied risk score.
+3. Do not change the supplied fraud probability.
+4. Do not change the supplied risk band.
+5. Treat the deterministic investigation as the primary evidence.
+6. Use the retrieved knowledge only to explain fraud patterns,
+   investigative context, and possible interpretation.
+7. Clearly distinguish evidence from interpretation.
+8. If the evidence is insufficient, say so.
+9. Do not claim that a transaction is fraudulent merely because
+   it has a high risk score.
+10. Produce professional language suitable for a fraud analyst.
+
+Return a concise investigation analysis containing:
+
+- AI assessment
+- Key fraud indicators
+- Evidence interpretation
+- Investigation considerations
+- Recommended next steps
+"""
+
+            user_prompt = f"""
+TRANSACTION INVESTIGATION
+=========================
+
+{investigation}
+
+RETRIEVED FRAUD KNOWLEDGE
+=========================
+
+{rag_context}
+
+DETERMINISTIC INVESTIGATION REPORT
+==================================
+
+{report}
+
+Analyze the investigation using the supplied evidence.
+"""
+
+            try:
+
+                ai_analysis = llm.generate(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                )
+
+                report["ai_analysis"] = ai_analysis
+
+            except Exception as exc:
+
+                report["ai_analysis_error"] = str(exc)
+
+        return report
