@@ -7,6 +7,10 @@ import altair as alt
 import pandas as pd
 import requests
 import streamlit as st
+from pathlib import Path
+
+from src.pipeline.ai_investigation_pipeline import AIInvestigationPipeline
+from src.reporting.pdf_report import PDFReportGenerator
 
 # ============================================================
 # AURA — PRODUCTION FRAUD OPERATIONS UI
@@ -43,6 +47,15 @@ if "selected_transaction" not in st.session_state:
 
 if "last_report" not in st.session_state:
     st.session_state.last_report = None
+
+if "ai_pipeline" not in st.session_state:
+    st.session_state.ai_pipeline = None
+
+if "ai_result" not in st.session_state:
+    st.session_state.ai_result = None
+
+if "ai_pdf_path" not in st.session_state:
+    st.session_state.ai_pdf_path = None
 
 
 # ============================================================
@@ -574,6 +587,86 @@ st.markdown(
         margin-top: 0.25rem;
     }
 
+    .ai-investigator-card {
+    background: #FFFFFF;
+    border: 1px solid #E4E7EC;
+    border-radius: 14px;
+    padding: 1.25rem;
+    margin-top: 1rem;
+    margin-bottom: 1rem;
+}
+
+.ai-investigator-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 1rem;
+}
+
+.ai-investigator-title {
+    font-size: 1.35rem;
+    font-weight: 750;
+    color: #182230;
+    margin-bottom: 0.3rem;
+}
+
+.ai-investigator-copy {
+    color: #667085;
+    font-size: 0.82rem;
+    line-height: 1.5;
+}
+
+.ai-result-card {
+    background: #FBFAFC;
+    border: 1px solid #E4E7EC;
+    border-radius: 14px;
+    padding: 1.25rem;
+    margin-top: 1rem;
+}
+
+.ai-result-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.ai-result-title {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: #182230;
+}
+
+.ai-section {
+    margin-top: 1rem;
+    padding: 1rem;
+    background: #FFFFFF;
+    border: 1px solid #E4E7EC;
+    border-radius: 10px;
+}
+
+.ai-section-title {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 800;
+    color: #667085;
+    margin-bottom: 0.45rem;
+}
+
+.ai-section-body {
+    color: #344054;
+    font-size: 0.88rem;
+    line-height: 1.6;
+}
+
+.ai-conclusion {
+    margin-top: 1rem;
+    padding: 1rem;
+    border-left: 4px solid #4F46E5;
+    background: #F7F8FF;
+    border-radius: 8px;
+}
+
     /* ========================================================
        FOOTER
        ======================================================== */
@@ -1090,6 +1183,265 @@ with st.sidebar:
 # OVERVIEW
 # ============================================================
 
+def render_ai_investigator(report):
+    """
+    Render the AURA AI Investigator panel for the current transaction.
+    """
+
+    if not report:
+        return
+
+    transaction_id = report.get("transaction_id")
+
+    render_html(
+        """
+        <div class="ai-investigator-card">
+            <div class="ai-investigator-header">
+                <div>
+                    <div class="page-kicker">AURA Intelligence</div>
+                    <div class="ai-investigator-title">
+                        AI Investigator
+                    </div>
+                    <div class="ai-investigator-copy">
+                        Let AURA interpret the investigation evidence,
+                        explain the risk, and generate an investigation report.
+                    </div>
+                </div>
+
+                <div class="online-badge">
+                    <span class="online-dot"></span>
+                    AI ONLINE
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    col1, col2 = st.columns([4, 1.2])
+
+    with col1:
+        st.text_input(
+            "Current transaction",
+            value=str(transaction_id),
+            disabled=True,
+        )
+
+    with col2:
+        st.write("")
+        st.write("")
+        analyze = st.button(
+            "Analyze with AURA AI",
+            use_container_width=True,
+            type="primary",
+        )
+
+    if analyze:
+
+        with st.spinner(
+            "AURA AI is analyzing transaction evidence..."
+        ):
+
+            try:
+
+                if st.session_state.ai_pipeline is None:
+                    st.session_state.ai_pipeline = (
+                        AIInvestigationPipeline()
+                    )
+
+                ai_result = (
+                    st.session_state.ai_pipeline
+                    .investigate(transaction_id)
+                )
+
+                st.session_state.ai_result = ai_result
+
+            except Exception as exc:
+
+                st.error(
+                    f"AURA AI analysis failed: {exc}"
+                )
+
+    if st.session_state.ai_result:
+
+        ai_result = st.session_state.ai_result
+
+        ai_report = ai_result.get(
+            "ai_report",
+            {}
+        )
+
+        render_html(
+            """
+            <div class="ai-result-card">
+                <div class="ai-result-header">
+                    <div class="ai-result-title">
+                        AI Investigation Analysis
+                    </div>
+                    <div class="online-badge">
+                        AURA GENERATED
+                    </div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        executive_summary = ai_report.get(
+            "executive_summary",
+            "No executive summary available."
+        )
+
+        render_html(
+            f"""
+            <div class="ai-section">
+                <div class="ai-section-title">
+                    Executive Assessment
+                </div>
+                <div class="ai-section-body">
+                    {executive_summary}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        risk_interpretation = ai_report.get(
+            "risk_interpretation",
+            []
+        )
+
+        if risk_interpretation:
+
+            render_html(
+                """
+                <div class="ai-section-title">
+                    Risk Interpretation
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            for item in risk_interpretation:
+                st.markdown(
+                    f"- {item}"
+                )
+
+        evidence = ai_report.get(
+            "evidence",
+            []
+        )
+
+        if evidence:
+
+            render_html(
+                """
+                <div class="ai-section-title">
+                    Key Evidence
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            for item in evidence:
+
+                description = item.get(
+                    "description",
+                    ""
+                )
+
+                st.markdown(
+                    f"- {description}"
+                )
+
+        conclusion = ai_report.get(
+            "investigator_conclusion",
+            ""
+        )
+
+        if conclusion:
+
+            render_html(
+                f"""
+                <div class="ai-conclusion">
+                    <div class="ai-section-title">
+                        Investigator Conclusion
+                    </div>
+                    <div class="ai-section-body">
+                        {conclusion}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        render_html(
+            "<br>",
+            unsafe_allow_html=True,
+        )
+
+        pdf_col, clear_col = st.columns(
+            [3, 1]
+        )
+
+        with pdf_col:
+
+            if st.button(
+                "Generate Investigation PDF",
+                use_container_width=True,
+            ):
+
+                try:
+
+                    generator = PDFReportGenerator()
+
+                    pdf_path = generator.generate(
+                        ai_result
+                    )
+
+                    st.session_state.ai_pdf_path = (
+                        pdf_path
+                    )
+
+                    st.success(
+                        "Investigation PDF generated successfully."
+                    )
+
+                except Exception as exc:
+
+                    st.error(
+                        f"PDF generation failed: {exc}"
+                    )
+
+        with clear_col:
+
+            if st.button(
+                "Clear AI",
+                use_container_width=True,
+            ):
+
+                st.session_state.ai_result = None
+                st.session_state.ai_pdf_path = None
+                st.rerun()
+
+        if st.session_state.ai_pdf_path:
+
+            pdf_path = st.session_state.ai_pdf_path
+
+            with open(
+                pdf_path,
+                "rb",
+            ) as pdf_file:
+
+                st.download_button(
+                    label="Download AURA Investigation Report",
+                    data=pdf_file,
+                    file_name=Path(pdf_path).name,
+                    mime="application/pdf",
+                    use_container_width=True,
+                )
+
+
 if page == "Overview":
 
     render_html(
@@ -1516,7 +1868,12 @@ elif page == "Investigations":
         render_investigation(
             st.session_state.last_report
         )
-        
+
+        st.divider()
+
+        render_ai_investigator(
+            st.session_state.last_report
+        )
 
                 # ============================================================
         # AURA AI INVESTIGATOR

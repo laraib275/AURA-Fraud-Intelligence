@@ -139,3 +139,4 @@ widgetsnbextension==4.0.15
 xgboost==3.4.1
 openai==3.5.0
 python-dotenv==1.2.3
+reportlab==5.0.1
