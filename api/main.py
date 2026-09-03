@@ -2,6 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 try:
@@ -14,7 +15,10 @@ try:
 except ImportError:
     pd = None
 
+from src.agents.action_executor import AURAActionExecutor
+from src.agents.action_router import ActionType, AURAActionRouter
 from src.pipeline.ai_investigation_pipeline import AIInvestigationPipeline
+from src.reporting.pdf_report import PDFReportGenerator
 
 # ============================================================
 # AURA FRAUD INTELLIGENCE API
@@ -24,12 +28,24 @@ app = FastAPI(
     title="AURA Fraud Intelligence API",
     description=(
         "AI-powered fraud detection, transaction investigation, "
-        "RAG-assisted analysis, and AI investigation copilot."
+        "RAG-assisted analysis, AI investigation copilot, "
+        "and natural-language action execution."
     ),
-    version="2.1.2",
+    version="2.3.0",
 )
 
+
+# ============================================================
+# AURA CORE SERVICES
+# ============================================================
+
 pipeline = AIInvestigationPipeline()
+
+action_router = AURAActionRouter()
+
+action_executor = AURAActionExecutor(
+    pipeline=pipeline
+)
 
 
 # ============================================================
@@ -45,46 +61,19 @@ class AskAURARequest(BaseModel):
 # ============================================================
 
 def make_json_safe(value):
-    """
-    Convert objects returned by the investigation pipeline into
-    values that FastAPI can safely serialize as JSON.
 
-    Handles:
-        - sets / frozensets
-        - dictionaries
-        - lists / tuples
-        - numpy values
-        - pandas values
-        - datetime/date
-        - Decimal
-        - objects exposing to_dict()
-        - objects exposing item()/tolist()
-    """
-
-    # --------------------------------------------------------
-    # None / primitive values
-    # --------------------------------------------------------
     if value is None:
         return None
 
     if isinstance(value, (str, int, float, bool)):
         return value
 
-    # --------------------------------------------------------
-    # Decimal
-    # --------------------------------------------------------
     if isinstance(value, Decimal):
         return float(value)
 
-    # --------------------------------------------------------
-    # Date / datetime
-    # --------------------------------------------------------
     if isinstance(value, (datetime, date)):
         return value.isoformat()
 
-    # --------------------------------------------------------
-    # Pandas
-    # --------------------------------------------------------
     if pd is not None:
 
         if value is pd.NA:
@@ -100,41 +89,29 @@ def make_json_safe(value):
             ]
 
         if isinstance(value, pd.DataFrame):
-            return make_json_safe(value.to_dict(orient="records"))
+            return make_json_safe(
+                value.to_dict(orient="records")
+            )
 
-    # --------------------------------------------------------
-    # NumPy
-    # --------------------------------------------------------
     if np is not None:
 
         if isinstance(value, np.ndarray):
-            return make_json_safe(value.tolist())
+            return make_json_safe(
+                value.tolist()
+            )
 
         if isinstance(value, np.generic):
-            return make_json_safe(value.item())
+            return make_json_safe(
+                value.item()
+            )
 
-    # --------------------------------------------------------
-    # Dictionaries
-    # --------------------------------------------------------
     if isinstance(value, dict):
+
         return {
             str(key): make_json_safe(val)
             for key, val in value.items()
         }
 
-    # --------------------------------------------------------
-    # SETS
-    #
-    # This is important for your current 500 error.
-    #
-    # A value such as:
-    #
-    #     {"transaction_id"}
-    #
-    # is a Python set, not a JSON string.
-    #
-    # We convert sets to lists so FastAPI can serialize them.
-    # --------------------------------------------------------
     if isinstance(value, (set, frozenset)):
 
         converted = [
@@ -142,7 +119,6 @@ def make_json_safe(value):
             for item in value
         ]
 
-        # Keep deterministic ordering where possible.
         try:
             return sorted(
                 converted,
@@ -151,45 +127,40 @@ def make_json_safe(value):
         except Exception:
             return converted
 
-    # --------------------------------------------------------
-    # Lists / tuples
-    # --------------------------------------------------------
     if isinstance(value, (list, tuple)):
+
         return [
             make_json_safe(item)
             for item in value
         ]
 
-    # --------------------------------------------------------
-    # Objects with to_dict()
-    # --------------------------------------------------------
     if hasattr(value, "to_dict") and callable(value.to_dict):
+
         try:
-            return make_json_safe(value.to_dict())
+            return make_json_safe(
+                value.to_dict()
+            )
         except Exception:
             pass
 
-    # --------------------------------------------------------
-    # NumPy-like item()
-    # --------------------------------------------------------
     if hasattr(value, "item") and callable(value.item):
+
         try:
-            return make_json_safe(value.item())
+            return make_json_safe(
+                value.item()
+            )
         except Exception:
             pass
 
-    # --------------------------------------------------------
-    # NumPy-like tolist()
-    # --------------------------------------------------------
     if hasattr(value, "tolist") and callable(value.tolist):
+
         try:
-            return make_json_safe(value.tolist())
+            return make_json_safe(
+                value.tolist()
+            )
         except Exception:
             pass
 
-    # --------------------------------------------------------
-    # Final fallback
-    # --------------------------------------------------------
     return str(value)
 
 
@@ -198,13 +169,6 @@ def make_json_safe(value):
 # ============================================================
 
 def get_investigation(transaction_id: str):
-    """
-    Run the existing AURA investigation pipeline and extract
-    the deterministic investigation object.
-
-    We intentionally do NOT change the investigation logic here.
-    This function only validates and normalizes its response.
-    """
 
     transaction_id = transaction_id.strip()
 
@@ -215,7 +179,9 @@ def get_investigation(transaction_id: str):
         )
 
     try:
-        result = pipeline.investigate(transaction_id)
+        result = pipeline.investigate(
+            transaction_id
+        )
     except Exception as exc:
         raise HTTPException(
             status_code=500,
@@ -240,7 +206,9 @@ def get_investigation(transaction_id: str):
             detail="Investigation pipeline returned an invalid response."
         )
 
-    investigation = result.get("investigation")
+    investigation = result.get(
+        "investigation"
+    )
 
     if investigation is None:
         raise HTTPException(
@@ -248,23 +216,29 @@ def get_investigation(transaction_id: str):
             detail="Investigation payload is missing."
         )
 
-    return make_json_safe(investigation)
+    return make_json_safe(
+        investigation
+    )
 
 
-def get_ai_report(transaction_id: str):
-    """
-    Get the AI report from the existing pipeline while keeping
-    the deterministic investigation flow unchanged.
-    """
+def get_pipeline_result(transaction_id: str):
 
     transaction_id = transaction_id.strip()
 
+    if not transaction_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Transaction ID cannot be empty."
+        )
+
     try:
-        result = pipeline.investigate(transaction_id)
+        result = pipeline.investigate(
+            transaction_id
+        )
     except Exception as exc:
         raise HTTPException(
             status_code=500,
-            detail=f"AI investigation failed: {exc}"
+            detail=f"Investigation failed: {exc}"
         )
 
     if not result:
@@ -279,8 +253,20 @@ def get_ai_report(transaction_id: str):
             detail=str(result["error"])
         )
 
+    return result
+
+
+def get_ai_report(transaction_id: str):
+
+    result = get_pipeline_result(
+        transaction_id
+    )
+
     return make_json_safe(
-        result.get("ai_report", {})
+        result.get(
+            "ai_report",
+            {}
+        )
     )
 
 
@@ -290,11 +276,14 @@ def get_ai_report(transaction_id: str):
 
 @app.get("/")
 def root():
+
     return {
         "application": "AURA Fraud Intelligence",
         "status": "online",
         "service": "AI Fraud Investigation API",
-        "version": "2.1.2",
+        "version": "2.3.0",
+        "action_router": "ready",
+        "action_executor": "ready",
     }
 
 
@@ -304,9 +293,12 @@ def root():
 
 @app.get("/health")
 def health():
+
     return {
         "status": "healthy",
         "ai_pipeline": "ready",
+        "action_router": "ready",
+        "action_executor": "ready",
     }
 
 
@@ -315,20 +307,13 @@ def health():
 # ============================================================
 
 @app.get("/investigate/{transaction_id}")
-def investigate(transaction_id: str):
+def investigate(
+    transaction_id: str
+):
 
-    investigation = get_investigation(transaction_id)
-
-    # --------------------------------------------------------
-    # IMPORTANT:
-    #
-    # The dashboard expects the deterministic investigation
-    # fields at the TOP LEVEL.
-    #
-    # Do not return the complete pipeline wrapper.
-    # --------------------------------------------------------
-
-    return investigation
+    return get_investigation(
+        transaction_id
+    )
 
 
 # ============================================================
@@ -336,16 +321,64 @@ def investigate(transaction_id: str):
 # ============================================================
 
 @app.get("/investigate/{transaction_id}/ai-report")
-def ai_investigation_report(transaction_id: str):
+def ai_investigation_report(
+    transaction_id: str
+):
 
     transaction_id = transaction_id.strip()
 
-    ai_report = get_ai_report(transaction_id)
-
     return {
         "transaction_id": transaction_id,
-        "ai_report": ai_report,
+        "ai_report": get_ai_report(
+            transaction_id
+        ),
     }
+
+
+# ============================================================
+# PDF GENERATION
+# ============================================================
+
+@app.get("/investigate/{transaction_id}/pdf")
+def generate_investigation_pdf(
+    transaction_id: str
+):
+
+    transaction_id = transaction_id.strip()
+
+    if not transaction_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Transaction ID cannot be empty."
+        )
+
+    try:
+
+        pipeline_result = get_pipeline_result(
+            transaction_id
+        )
+
+        generator = PDFReportGenerator()
+
+        pdf_path = generator.generate(
+            pipeline_result
+        )
+
+    except HTTPException:
+        raise
+
+    except Exception as exc:
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"PDF generation failed: {exc}"
+        )
+
+    return FileResponse(
+        path=pdf_path,
+        media_type="application/pdf",
+        filename=f"AURA_Investigation_{transaction_id}.pdf",
+    )
 
 
 # ============================================================
@@ -373,68 +406,254 @@ def ask_aura(
             detail="Question cannot be empty."
         )
 
-    # --------------------------------------------------------
-    # Use the same deterministic investigation engine used by
-    # the investigation workflow.
-    # --------------------------------------------------------
+    # ========================================================
+    # 1. ACTION ROUTING
+    # ========================================================
+
+    decision = action_router.route(
+        question
+    )
+
+    # ========================================================
+    # 2. ACTION EXECUTION
+    # ========================================================
+
+    execution = action_executor.execute(
+        decision=decision,
+        transaction_id=transaction_id,
+        question=question,
+    )
+
+    if not execution.success:
+
+        raise HTTPException(
+            status_code=400,
+            detail=execution.message
+        )
+
+    # ========================================================
+    # 3. EXPLICIT PDF REQUEST
+    # ========================================================
+
+    if decision.action == ActionType.GENERATE_PDF:
+
+        try:
+
+            pipeline_result = get_pipeline_result(
+                transaction_id
+            )
+
+            generator = PDFReportGenerator()
+
+            pdf_path = generator.generate(
+                pipeline_result
+            )
+
+        except Exception as exc:
+
+            raise HTTPException(
+                status_code=500,
+                detail=f"PDF generation failed: {exc}"
+            )
+
+        return {
+            "transaction_id": transaction_id,
+            "question": question,
+            "action": decision.action.value,
+            "explicit_request": decision.explicit_request,
+            "confidence": decision.confidence,
+            "message": "Investigation PDF generated successfully.",
+            "action_result": make_json_safe(
+                execution.data
+            ),
+            "pdf": {
+                "available": True,
+                "download_endpoint": (
+                    f"/investigate/"
+                    f"{transaction_id}/pdf"
+                ),
+                "filename": (
+                    f"AURA_Investigation_"
+                    f"{transaction_id}.pdf"
+                ),
+            },
+        }
+
+    # ========================================================
+    # 4. VIDEO REQUEST
+    # ========================================================
+
+    if decision.action == ActionType.GENERATE_VIDEO:
+
+        return {
+            "transaction_id": transaction_id,
+            "question": question,
+            "action": decision.action.value,
+            "explicit_request": decision.explicit_request,
+            "confidence": decision.confidence,
+            "message": (
+                "Video generation request accepted. "
+                "Video generation service will be connected "
+                "in the next AURA action phase."
+            ),
+            "action_result": make_json_safe(
+                execution.data
+            ),
+        }
+
+    # ========================================================
+    # 5. CEO SUMMARY
+    # ========================================================
+
+    if decision.action == ActionType.GENERATE_CEO_SUMMARY:
+
+        return {
+            "transaction_id": transaction_id,
+            "question": question,
+            "action": decision.action.value,
+            "explicit_request": decision.explicit_request,
+            "confidence": decision.confidence,
+            "message": (
+                "Executive intelligence request accepted."
+            ),
+            "action_result": make_json_safe(
+                execution.data
+            ),
+        }
+
+    # ========================================================
+    # 6. MULTI-TRANSACTION ANALYSIS
+    # ========================================================
+
+    if decision.action == ActionType.ANALYZE_TRANSACTIONS:
+
+        return {
+            "transaction_id": transaction_id,
+            "question": question,
+            "action": decision.action.value,
+            "explicit_request": decision.explicit_request,
+            "confidence": decision.confidence,
+            "message": (
+                "Multi-transaction analysis request accepted."
+            ),
+            "action_result": make_json_safe(
+                execution.data
+            ),
+        }
+
+    # ========================================================
+    # 7. CASE CREATION
+    # ========================================================
+
+    if decision.action == ActionType.CREATE_CASE:
+
+        return {
+            "transaction_id": transaction_id,
+            "question": question,
+            "action": decision.action.value,
+            "explicit_request": decision.explicit_request,
+            "confidence": decision.confidence,
+            "message": (
+                "Case creation request accepted. "
+                "Case management will be connected "
+                "in the case-management phase."
+            ),
+            "action_result": make_json_safe(
+                execution.data
+            ),
+        }
+
+    # ========================================================
+    # 8. NORMAL AURA QUESTION
+    # ========================================================
 
     try:
+
         investigation = (
-            pipeline.investigation_engine
-            .investigate_transaction(transaction_id)
+            pipeline
+            .investigation_engine
+            .investigate_transaction(
+                transaction_id
+            )
         )
+
     except Exception as exc:
+
         raise HTTPException(
             status_code=500,
             detail=f"Investigation failed: {exc}"
         )
 
     if not investigation:
+
         raise HTTPException(
             status_code=404,
             detail="Investigation returned no result."
         )
 
-    if isinstance(investigation, dict) and "error" in investigation:
+    if (
+        isinstance(investigation, dict)
+        and "error" in investigation
+    ):
+
         raise HTTPException(
             status_code=404,
-            detail=str(investigation["error"])
+            detail=str(
+                investigation["error"]
+            )
         )
 
-    # Normalize before sending it into the AI context.
-    investigation = make_json_safe(investigation)
+    investigation = make_json_safe(
+        investigation
+    )
 
-    # --------------------------------------------------------
-    # RAG CONTEXT
-    # --------------------------------------------------------
+    # ========================================================
+    # RAG
+    # ========================================================
 
     try:
-        rag_context = pipeline.rag.build_context(
-            investigation,
-            top_k=5
+
+        rag_context = (
+            pipeline
+            .rag
+            .build_context(
+                investigation,
+                top_k=5
+            )
         )
+
     except Exception as exc:
+
         raise HTTPException(
             status_code=500,
-            detail=f"RAG context generation failed: {exc}"
+            detail=(
+                "RAG context generation failed: "
+                f"{exc}"
+            )
         )
 
-    rag_context = make_json_safe(rag_context)
+    rag_context = make_json_safe(
+        rag_context
+    )
 
-    # --------------------------------------------------------
+    # ========================================================
     # AURA SYSTEM PROMPT
-    # --------------------------------------------------------
+    # ========================================================
 
     system_prompt = """
-You are AURA AI Copilot, an evidence-grounded fraud investigation assistant.
+You are AURA AI Copilot, an evidence-grounded
+fraud investigation assistant.
 
-Your job is to help a fraud analyst understand the CURRENT TRANSACTION.
+Your job is to help a fraud analyst understand
+the CURRENT TRANSACTION.
 
 Use ONLY:
+
 1. The supplied transaction investigation.
 2. The retrieved fraud knowledge.
 
 Never invent:
+
 - transaction information
 - customer information
 - merchant information
@@ -445,24 +664,27 @@ Never invent:
 - fraud information
 
 Clearly distinguish:
+
 - observed evidence
 - model/rule outputs
 - interpretation
 
-Do not call a transaction fraudulent unless the supplied evidence supports
-that conclusion.
+Do not call a transaction fraudulent unless
+the supplied evidence supports that conclusion.
 
-When the transaction has a risk score or risk level, use the supplied
-risk score and risk level exactly.
+When the transaction has a risk score or risk
+level, use the supplied risk score and risk
+level exactly.
 
-If evidence is unavailable, explicitly say that it is unavailable.
+If evidence is unavailable, explicitly say
+that it is unavailable.
 
 Answer professionally, concisely, and directly.
 """
 
-    # --------------------------------------------------------
+    # ========================================================
     # USER PROMPT
-    # --------------------------------------------------------
+    # ========================================================
 
     user_prompt = f"""
 CURRENT TRANSACTION
@@ -477,35 +699,42 @@ RETRIEVED FRAUD KNOWLEDGE
 ANALYST QUESTION
 {question}
 
-Answer the analyst's question using only the supplied evidence and
-retrieved knowledge.
+Answer the analyst's question using only the
+supplied evidence and retrieved knowledge.
 
-If the evidence does not answer the question, say so clearly.
+If the evidence does not answer the question,
+say so clearly.
 
 Do not manufacture missing information.
 """
 
-    # --------------------------------------------------------
+    # ========================================================
     # LLM
-    # --------------------------------------------------------
+    # ========================================================
 
     try:
+
         answer = pipeline.llm.generate(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
         )
+
     except Exception as exc:
+
         raise HTTPException(
             status_code=500,
             detail=f"AURA AI generation failed: {exc}"
         )
 
-    # --------------------------------------------------------
-    # RESPONSE
-    # --------------------------------------------------------
+    # ========================================================
+    # FINAL RESPONSE
+    # ========================================================
 
     return {
         "transaction_id": transaction_id,
         "question": question,
+        "action": decision.action.value,
+        "explicit_request": decision.explicit_request,
+        "confidence": decision.confidence,
         "answer": make_json_safe(answer),
     }
