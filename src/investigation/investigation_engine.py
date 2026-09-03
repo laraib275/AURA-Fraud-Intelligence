@@ -5,7 +5,6 @@ import numpy as np
 import pandas as pd
 import shap
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -37,11 +36,7 @@ class InvestigationEngine:
     ]
 
     def __init__(self):
-
-        # ---------------------------------------------------------
-        # FILE PATHS
-        # ---------------------------------------------------------
-
+        # Project-relative paths
         self.model_path = (
             PROJECT_ROOT
             / "models"
@@ -69,103 +64,40 @@ class InvestigationEngine:
             / "sparkov_graph_analysis.parquet"
         )
 
-        # ---------------------------------------------------------
-        # LOAD MODEL AND DATA
-        # ---------------------------------------------------------
-
+        # Load model and datasets once
         self.model = joblib.load(self.model_path)
+        self.df = pd.read_parquet(self.data_path)
+        self.risk_df = pd.read_parquet(self.risk_data_path)
+        self.graph_df = pd.read_parquet(self.graph_data_path)
 
-        self.df = pd.read_parquet(
-            self.data_path
-        )
+        # Transaction IDs must be compared as strings. The CSV/parquet
+        # pipeline can otherwise leave different string/object dtypes.
+        self.df["trans_num"] = self.df["trans_num"].astype(str).str.strip()
+        self.risk_df["trans_num"] = self.risk_df["trans_num"].astype(str).str.strip()
+        self.graph_df["trans_num"] = self.graph_df["trans_num"].astype(str).str.strip()
 
-        self.risk_df = pd.read_parquet(
-            self.risk_data_path
-        )
-
-        self.graph_df = pd.read_parquet(
-            self.graph_data_path
-        )
-
-        # ---------------------------------------------------------
-        # MODEL COMPONENTS
-        # ---------------------------------------------------------
-
+        # Reuse these objects for every investigation
         self.imputer = self.model.named_steps["imputer"]
-
         self.rf_model = self.model.named_steps["model"]
+        self.shap_explainer = shap.TreeExplainer(self.rf_model)
 
-        self.shap_explainer = shap.TreeExplainer(
-            self.rf_model
-        )
-
-    # =============================================================
-    # JSON SAFE CONVERSION
-    # =============================================================
-
-    def _to_python(self, obj):
-        """
-        Convert NumPy/Pandas objects into JSON-safe Python objects.
-
-        NaN, NaT, positive infinity and negative infinity
-        are converted to None so FastAPI can serialize them.
-        """
-
-        # Dictionary
-        if isinstance(obj, dict):
-            return {
-                str(key): self._to_python(value)
-                for key, value in obj.items()
-            }
-
-        # List / tuple
-        if isinstance(obj, (list, tuple)):
-            return [
-                self._to_python(value)
-                for value in obj
-            ]
-
-        # NumPy array
-        if isinstance(obj, np.ndarray):
-            return [
-                self._to_python(value)
-                for value in obj.tolist()
-            ]
-
-        # NumPy scalar
-        if isinstance(obj, np.generic):
-            return self._to_python(
-                obj.item()
-            )
-
-        # Pandas timestamp
-        if isinstance(obj, pd.Timestamp):
-            return obj.isoformat()
-
-        # Pandas NA / NaT
-        if obj is pd.NA or obj is pd.NaT:
-            return None
-
-        # Python float
-        if isinstance(obj, float):
-
-            if not np.isfinite(obj):
-                return None
-
-            return obj
-
-        # Integer / boolean / string / None
-        return obj
-
-    # =============================================================
-    # INVESTIGATION REASONS
-    # =============================================================
-
-    def _generate_reasons(self, row):
-
+    def _generate_reasons(self, row, risk_row=None):
         reasons = []
 
-        # High velocity in previous hour
+        # Reasons from the final AURA risk-engine components.
+        # These are the same components used to create final_risk_score.
+        if risk_row is not None:
+            if float(risk_row.get("amount_risk", 0)) >= 70:
+                reasons.append("High transaction amount risk relative to the observed transaction population")
+            if float(risk_row.get("velocity_risk", 0)) >= 70:
+                reasons.append("High transaction velocity risk")
+            if float(risk_row.get("novelty_risk", 0)) >= 70:
+                reasons.append("High transaction novelty risk")
+            if float(risk_row.get("anomaly_risk", 0)) >= 70:
+                reasons.append("High anomaly risk score")
+            if int(risk_row.get("anomaly_flag", 0)) == 1:
+                reasons.append("Transaction was flagged by the anomaly detector")
+
         if (
             pd.notna(row["transactions_prev_1h"])
             and row["transactions_prev_1h"] >= 3
@@ -174,7 +106,6 @@ class InvestigationEngine:
                 "High transaction velocity in the previous hour"
             )
 
-        # Multiple transactions in 5 minutes
         if (
             pd.notna(row["transactions_prev_5min"])
             and row["transactions_prev_5min"] >= 2
@@ -183,7 +114,6 @@ class InvestigationEngine:
                 "Multiple transactions within a short time window"
             )
 
-        # Large amount deviation
         if (
             pd.notna(row["amount_deviation_ratio"])
             and row["amount_deviation_ratio"] >= 3
@@ -192,25 +122,16 @@ class InvestigationEngine:
                 "Transaction amount is substantially above customer history"
             )
 
-        # New merchant
-        if (
-            pd.notna(row["is_new_merchant"])
-            and row["is_new_merchant"] == 1
-        ):
+        if row["is_new_merchant"] == 1:
             reasons.append(
                 "Previously unseen merchant for this customer"
             )
 
-        # New category
-        if (
-            pd.notna(row["is_new_category"])
-            and row["is_new_category"] == 1
-        ):
+        if row["is_new_category"] == 1:
             reasons.append(
                 "Previously unseen transaction category"
             )
 
-        # Large geographic distance
         if (
             pd.notna(row["customer_merchant_distance_km"])
             and row["customer_merchant_distance_km"] >= 200
@@ -219,16 +140,11 @@ class InvestigationEngine:
                 "Large customer-merchant geographic distance"
             )
 
-        # No transaction history
-        if (
-            pd.notna(row["customer_prev_count"])
-            and row["customer_prev_count"] == 0
-        ):
+        if row["customer_prev_count"] == 0:
             reasons.append(
                 "No prior transaction history available"
             )
 
-        # Default reason
         if not reasons:
             reasons.append(
                 "Model identified an anomalous transaction pattern"
@@ -236,47 +152,23 @@ class InvestigationEngine:
 
         return reasons
 
-    # =============================================================
-    # SHAP FACTORS
-    # =============================================================
-
     def _get_shap_factors(self, features):
-
-        features_imputed = self.imputer.transform(
-            features
-        )
+        features_imputed = self.imputer.transform(features)
 
         shap_values = np.asarray(
-            self.shap_explainer.shap_values(
-                features_imputed
-            )
+            self.shap_explainer.shap_values(features_imputed)
         )
 
-        # ---------------------------------------------------------
-        # Handle different SHAP output formats
-        # ---------------------------------------------------------
-
         if shap_values.ndim == 3:
-
-            shap_fraud = shap_values[
-                0,
-                :,
-                1
-            ]
+            shap_fraud = shap_values[0, :, 1]
 
         elif shap_values.ndim == 2:
-
             shap_fraud = shap_values[0]
 
         else:
-
             raise ValueError(
                 f"Unexpected SHAP shape: {shap_values.shape}"
             )
-
-        # ---------------------------------------------------------
-        # Create explanation dataframe
-        # ---------------------------------------------------------
 
         explanation = pd.DataFrame(
             {
@@ -290,87 +182,31 @@ class InvestigationEngine:
             explanation["shap_value"].abs()
         )
 
-        # Highest impact first
         explanation = explanation.sort_values(
             "abs_shap",
             ascending=False,
         )
 
-        # Only factors increasing fraud risk
-        explanation = explanation[
-            explanation["shap_value"] > 0
-        ]
-
-        # Top 5
-        explanation = explanation.head(5)
-
-        return explanation.to_dict(
-            "records"
+        return (
+            explanation[
+                explanation["shap_value"] > 0
+            ]
+            .head(5)
+            .to_dict("records")
         )
 
-    # =============================================================
-    # GRAPH ANALYSIS
-    # =============================================================
-
-    def _get_graph_analysis(self, graph_row):
-
-        graph_analysis = {}
-
-        for column in self.graph_df.columns:
-
-            value = graph_row[column]
-
-            graph_analysis[column] = value
-
-        return graph_analysis
-
-    # =============================================================
-    # MAIN INVESTIGATION
-    # =============================================================
-
-    def investigate_transaction(
-        self,
-        transaction_id
-    ):
-
-        # ---------------------------------------------------------
-        # FIND TRANSACTION
-        # ---------------------------------------------------------
+    def investigate_transaction(self, transaction_id):
+        transaction_id = str(transaction_id).strip()
 
         matches = self.df[
             self.df["trans_num"] == transaction_id
         ]
-
-        if matches.empty:
-
-            return {
-                "error": (
-                    f"Transaction "
-                    f"{transaction_id} not found."
-                )
-            }
-
-        if len(matches) > 1:
-
-            return {
-                "error": (
-                    f"Multiple records found for "
-                    f"{transaction_id}."
-                )
-            }
-
-        row = matches.iloc[0]
-
-        # ---------------------------------------------------------
-        # FIND RISK ENGINE RECORD
-        # ---------------------------------------------------------
 
         risk_matches = self.risk_df[
             self.risk_df["trans_num"] == transaction_id
         ]
 
         if risk_matches.empty:
-
             return {
                 "error": (
                     f"Risk-engine record for transaction "
@@ -379,7 +215,6 @@ class InvestigationEngine:
             }
 
         if len(risk_matches) > 1:
-
             return {
                 "error": (
                     f"Multiple risk-engine records found for "
@@ -389,16 +224,11 @@ class InvestigationEngine:
 
         risk_row = risk_matches.iloc[0]
 
-        # ---------------------------------------------------------
-        # FIND GRAPH RECORD
-        # ---------------------------------------------------------
-
         graph_matches = self.graph_df[
             self.graph_df["trans_num"] == transaction_id
         ]
 
         if graph_matches.empty:
-
             return {
                 "error": (
                     f"Graph-analysis record for transaction "
@@ -407,7 +237,6 @@ class InvestigationEngine:
             }
 
         if len(graph_matches) > 1:
-
             return {
                 "error": (
                     f"Multiple graph-analysis records found for "
@@ -417,27 +246,29 @@ class InvestigationEngine:
 
         graph_row = graph_matches.iloc[0]
 
-        # ---------------------------------------------------------
-        # MODEL FEATURES
-        # ---------------------------------------------------------
+        if matches.empty:
+            return {
+                "error": (
+                    f"Transaction {transaction_id} not found."
+                )
+            }
+
+        if len(matches) > 1:
+            return {
+                "error": (
+                    f"Multiple records found for {transaction_id}."
+                )
+            }
+
+        row = matches.iloc[0]
 
         features = row[
             self.MODEL_FEATURES
         ].to_frame().T
 
-        # ---------------------------------------------------------
-        # FRAUD PROBABILITY
-        # ---------------------------------------------------------
-
         fraud_probability = float(
-            self.model.predict_proba(
-                features
-            )[0, 1]
+            self.model.predict_proba(features)[0, 1]
         )
-
-        # ---------------------------------------------------------
-        # RISK ENGINE
-        # ---------------------------------------------------------
 
         risk_score = float(
             risk_row["final_risk_score"]
@@ -451,94 +282,97 @@ class InvestigationEngine:
             risk_row["investigation_flag"]
         )
 
-        # ---------------------------------------------------------
-        # RECOMMENDED ACTION
-        # ---------------------------------------------------------
-
         if risk_band == "CRITICAL":
-
-            action = (
-                "IMMEDIATE INVESTIGATION"
-            )
+            action = "IMMEDIATE INVESTIGATION"
 
         elif risk_band == "HIGH":
-
-            action = (
-                "ESCALATE FOR INVESTIGATION"
-            )
+            action = "ESCALATE FOR INVESTIGATION"
 
         elif risk_band == "MEDIUM":
-
-            action = (
-                "SEND TO REVIEW QUEUE"
-            )
+            action = "SEND TO REVIEW QUEUE"
 
         else:
-
             action = "APPROVE"
 
-        # ---------------------------------------------------------
-        # INVESTIGATION REASONS
-        # ---------------------------------------------------------
-
-        reasons = self._generate_reasons(
-            row
-        )
-
-        # ---------------------------------------------------------
-        # SHAP FACTORS
-        # ---------------------------------------------------------
+        reasons = self._generate_reasons(row, risk_row)
 
         shap_factors = self._get_shap_factors(
             features
         )
 
-        # ---------------------------------------------------------
-        # GRAPH ANALYSIS
-        # ---------------------------------------------------------
-
-        graph_analysis = self._get_graph_analysis(
-            graph_row
-        )
-
-        # ---------------------------------------------------------
-        # FINAL RESPONSE
-        # ---------------------------------------------------------
-
-        response = {
-
+        return {
             "transaction_id": transaction_id,
 
             "transaction_time": str(
                 row["transaction_time"]
             ),
 
-            "amount": float(
-                row["amt"]
+            "amount": float(row["amt"]),
+
+            # Graph-analysis output
+            "graph_risk_score": round(
+                float(graph_row["graph_risk_score"]),
+                2,
             ),
 
-            # Machine-learning output
-            "fraud_probability": (
-                fraud_probability
-            ),
+            "graph_risk_band": str(
+                graph_row["graph_risk_band"]
+            ).upper(),
 
-            # AURA risk engine
-            "risk_score": float(
-                round(
-                    risk_score,
-                    2
-                )
-            ),
+            "graph_metrics": {
+                "transaction_count": int(
+                    graph_row["transaction_count"]
+                ),
 
+                "unique_merchant_count": int(
+                    graph_row["unique_merchant_count"]
+                ),
+
+                "fraud_transaction_count": int(
+                    graph_row["fraud_transaction_count"]
+                ),
+
+                "high_risk_transaction_count": int(
+                    graph_row["high_risk_transaction_count"]
+                ),
+
+                "average_transaction_risk": round(
+                    float(
+                        graph_row["average_transaction_risk"]
+                    ),
+                    2,
+                ),
+
+                "maximum_transaction_risk": round(
+                    float(
+                        graph_row["maximum_transaction_risk"]
+                    ),
+                    2,
+                ),
+
+                "fraud_ratio": round(
+                    float(graph_row["fraud_ratio"]),
+                    4,
+                ),
+
+                "high_risk_ratio": round(
+                    float(graph_row["high_risk_ratio"]),
+                    4,
+                ),
+            },
+
+            "graph_reasons": graph_row["graph_reasons"],
+
+            # Machine-learning model output
+            "fraud_probability": fraud_probability,
+
+            # Final AURA risk-engine output
+            "risk_score": round(risk_score, 2),
             "risk_band": risk_band,
-
-            "investigation_flag": (
-                investigation_flag
-            ),
-
+            "investigation_flag": investigation_flag,
             "recommended_action": action,
 
-            # Risk components
+            # Risk-engine components
             "amount_risk": float(
                 risk_row["amount_risk"]
             ),
@@ -565,17 +399,5 @@ class InvestigationEngine:
 
             # Explainability
             "investigation_reasons": reasons,
-
             "top_risk_factors": shap_factors,
-
-            # Graph intelligence
-            "graph_analysis": graph_analysis,
         }
-
-        # ---------------------------------------------------------
-        # MAKE EVERYTHING JSON SAFE
-        # ---------------------------------------------------------
-
-        return self._to_python(
-            response
-        )
