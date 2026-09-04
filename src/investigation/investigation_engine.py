@@ -70,33 +70,13 @@ class InvestigationEngine:
         self.risk_df = pd.read_parquet(self.risk_data_path)
         self.graph_df = pd.read_parquet(self.graph_data_path)
 
-        # Transaction IDs must be compared as strings. The CSV/parquet
-        # pipeline can otherwise leave different string/object dtypes.
-        self.df["trans_num"] = self.df["trans_num"].astype(str).str.strip()
-        self.risk_df["trans_num"] = self.risk_df["trans_num"].astype(str).str.strip()
-        self.graph_df["trans_num"] = self.graph_df["trans_num"].astype(str).str.strip()
-
         # Reuse these objects for every investigation
         self.imputer = self.model.named_steps["imputer"]
         self.rf_model = self.model.named_steps["model"]
         self.shap_explainer = shap.TreeExplainer(self.rf_model)
 
-    def _generate_reasons(self, row, risk_row=None):
+    def _generate_reasons(self, row):
         reasons = []
-
-        # Reasons from the final AURA risk-engine components.
-        # These are the same components used to create final_risk_score.
-        if risk_row is not None:
-            if float(risk_row.get("amount_risk", 0)) >= 70:
-                reasons.append("High transaction amount risk relative to the observed transaction population")
-            if float(risk_row.get("velocity_risk", 0)) >= 70:
-                reasons.append("High transaction velocity risk")
-            if float(risk_row.get("novelty_risk", 0)) >= 70:
-                reasons.append("High transaction novelty risk")
-            if float(risk_row.get("anomaly_risk", 0)) >= 70:
-                reasons.append("High anomaly risk score")
-            if int(risk_row.get("anomaly_flag", 0)) == 1:
-                reasons.append("Transaction was flagged by the anomaly detector")
 
         if (
             pd.notna(row["transactions_prev_1h"])
@@ -196,8 +176,6 @@ class InvestigationEngine:
         )
 
     def investigate_transaction(self, transaction_id):
-        transaction_id = str(transaction_id).strip()
-
         matches = self.df[
             self.df["trans_num"] == transaction_id
         ]
@@ -294,7 +272,7 @@ class InvestigationEngine:
         else:
             action = "APPROVE"
 
-        reasons = self._generate_reasons(row, risk_row)
+        reasons = self._generate_reasons(row)
 
         shap_factors = self._get_shap_factors(
             features
@@ -361,7 +339,24 @@ class InvestigationEngine:
                 ),
             },
 
-            "graph_reasons": graph_row["graph_reasons"],
+            "graph_reasons": [str(reason) for reason in graph_row["graph_reasons"]],
+
+            # Structured graph-analysis output for AI Investigator and reporting
+            "graph_analysis": {
+                "graph_risk_score": round(float(graph_row["graph_risk_score"]), 2),
+                "graph_risk_band": str(graph_row["graph_risk_band"]).upper(),
+                "graph_metrics": {
+                    "transaction_count": int(graph_row["transaction_count"]),
+                    "unique_merchant_count": int(graph_row["unique_merchant_count"]),
+                    "fraud_transaction_count": int(graph_row["fraud_transaction_count"]),
+                    "high_risk_transaction_count": int(graph_row["high_risk_transaction_count"]),
+                    "average_transaction_risk": round(float(graph_row["average_transaction_risk"]), 2),
+                    "maximum_transaction_risk": round(float(graph_row["maximum_transaction_risk"]), 2),
+                    "fraud_ratio": round(float(graph_row["fraud_ratio"]), 4),
+                    "high_risk_ratio": round(float(graph_row["high_risk_ratio"]), 4),
+                },
+                "graph_reasons": [str(reason) for reason in graph_row["graph_reasons"]],
+            },
 
             # Machine-learning model output
             "fraud_probability": fraud_probability,

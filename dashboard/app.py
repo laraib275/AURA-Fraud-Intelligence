@@ -1065,6 +1065,10 @@ def render_ai_features(report: dict[str, Any]) -> None:
             st.markdown(question)
 
         with st.chat_message("assistant"):
+            pdf_available = False
+            pdf_endpoint = None
+            pdf_filename = f"AURA_Investigation_{transaction_id}.pdf"
+
             with st.spinner("AURA is analyzing the evidence..."):
                 try:
                     response = requests.post(
@@ -1072,21 +1076,113 @@ def render_ai_features(report: dict[str, Any]) -> None:
                         json={"question": question},
                         timeout=120,
                     )
+
                     if response.status_code == 200:
-                        answer = response.json().get(
-                            "answer", "AURA returned no answer."
-                        )
+                        data = response.json()
+                        action = data.get("action", "answer_question")
+
+                        if action == "answer_question":
+                            answer = data.get(
+                                "answer",
+                                "AURA returned no answer."
+                            )
+
+                        elif action == "generate_pdf":
+                            answer = data.get(
+                                "message",
+                                "Investigation PDF generated successfully."
+                            )
+
+                            pdf_info = data.get("pdf", {})
+                            pdf_available = pdf_info.get("available", False)
+                            pdf_endpoint = pdf_info.get("download_endpoint")
+                            pdf_filename = pdf_info.get(
+                                "filename",
+                                pdf_filename,
+                            )
+
+                        elif action == "generate_video":
+                            answer = data.get(
+                                "message",
+                                "Video generation has been requested, "
+                                "but the video generation capability is "
+                                "not connected yet."
+                            )
+
+                        elif action == "generate_ceo_summary":
+                            answer = data.get(
+                                "message",
+                                "CEO executive summary generation has "
+                                "been requested, but this capability is "
+                                "not connected yet."
+                            )
+
+                        elif action == "analyze_transactions":
+                            answer = data.get(
+                                "message",
+                                "Multi-transaction analysis has been "
+                                "requested, but this capability is not "
+                                "connected yet."
+                            )
+
+                        elif action == "create_case":
+                            answer = data.get(
+                                "message",
+                                "Case creation has been requested, but "
+                                "the case-management capability is not "
+                                "connected yet."
+                            )
+
+                        else:
+                            answer = data.get(
+                                "answer",
+                                data.get(
+                                    "message",
+                                    "AURA completed the requested action."
+                                )
+                            )
+
                     else:
                         answer = (
                             "AURA could not answer the question. "
                             f"API status: {response.status_code}."
                         )
+
                 except requests.exceptions.RequestException as exc:
                     answer = (
                         "AURA could not reach the investigation API. "
-                        f"Check that FastAPI is running on {API_URL}. Error: {exc}"
+                        f"Check that FastAPI is running on {API_URL}. "
+                        f"Error: {exc}"
                     )
+
             st.markdown(answer)
+
+            if pdf_available and pdf_endpoint:
+                try:
+                    pdf_response = requests.get(
+                        f"{API_URL}{pdf_endpoint}",
+                        timeout=120,
+                    )
+
+                    if pdf_response.status_code == 200:
+                        st.download_button(
+                            label="Download Investigation PDF",
+                            data=pdf_response.content,
+                            file_name=pdf_filename,
+                            mime="application/pdf",
+                            key=f"download_pdf_{transaction_id}",
+                        )
+                    else:
+                        st.warning(
+                            "PDF was generated, but the download endpoint "
+                            f"returned HTTP {pdf_response.status_code}."
+                        )
+
+                except requests.exceptions.RequestException as exc:
+                    st.warning(
+                        "PDF was generated, but AURA could not retrieve "
+                        f"the file. Error: {exc}"
+                    )
 
         st.session_state.aura_chat.append(
             {"role": "assistant", "content": answer}

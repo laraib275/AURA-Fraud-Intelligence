@@ -653,8 +653,14 @@ class PDFReportGenerator:
             {},
         )
 
-        graph_data = graph_analysis.get(
-            "data",
+        # Support the current InvestigationEngine graph_analysis structure.
+        # Also retain backward compatibility with the older graph_analysis["data"] structure.
+        graph_data = graph_analysis.get("data", {})
+        if not graph_data and graph_analysis.get("graph_risk_score") is not None:
+            graph_data = graph_analysis
+
+        graph_metrics = graph_data.get(
+            "graph_metrics",
             {},
         )
 
@@ -677,21 +683,21 @@ class PDFReportGenerator:
                 ),
                 (
                     "Transaction Count",
-                    graph_data.get(
+                    graph_metrics.get(
                         "transaction_count",
                         "N/A",
                     ),
                 ),
                 (
                     "Fraud Transaction Count",
-                    graph_data.get(
+                    graph_metrics.get(
                         "fraud_transaction_count",
                         "N/A",
                     ),
                 ),
                 (
                     "Fraud Ratio",
-                    graph_data.get(
+                    graph_metrics.get(
                         "fraud_ratio",
                         "N/A",
                     ),
@@ -791,7 +797,7 @@ class PDFReportGenerator:
         # 7. AI INVESTIGATION ANALYSIS
         # =====================================================
 
-        
+        story.append(PageBreak())
 
         story.append(
             Paragraph(
@@ -1018,7 +1024,9 @@ class PDFReportGenerator:
 
                 flush_table()
 
-                
+                story.append(
+                    Spacer(1, 4)
+                )
 
                 continue
 

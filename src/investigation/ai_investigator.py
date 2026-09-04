@@ -278,6 +278,11 @@ IMPORTANT RULES:
 9. Do not claim that a transaction is fraudulent merely because
    it has a high risk score.
 10. Produce professional language suitable for a fraud analyst.
+11. The overall AURA risk score and graph risk score are separate metrics.
+12. NEVER describe the overall AURA risk score as the graph risk score.
+13. When discussing graph analysis, use only the explicitly supplied GRAPH RISK SCORE and GRAPH RISK BAND.
+14. When discussing overall transaction risk, use the AURA RISK SCORE and AURA RISK BAND.
+15. If graph evidence is available, clearly distinguish graph risk from the final AURA risk assessment.
 
 Return a concise investigation analysis containing:
 
@@ -287,8 +292,23 @@ Return a concise investigation analysis containing:
 - Investigation considerations
 - Recommended next steps
 """
+        graph_data = investigation.get("graph_analysis", {})
 
-            user_prompt = f"""
+        graph_risk_score = graph_data.get(
+            "graph_risk_score"
+        )
+
+        graph_risk_band = graph_data.get(
+            "graph_risk_band",
+            "UNKNOWN"
+        )
+        user_prompt = f"""
+EXPLICIT RISK METRICS
+=====================
+AURA RISK SCORE: {risk_score}
+AURA RISK BAND: {risk_band}
+GRAPH RISK SCORE: {graph_risk_score}
+GRAPH RISK BAND: {graph_risk_band}
 TRANSACTION INVESTIGATION
 =========================
 
@@ -306,18 +326,17 @@ DETERMINISTIC INVESTIGATION REPORT
 
 Analyze the investigation using the supplied evidence.
 """
+        try:
 
-            try:
+            ai_analysis = llm.generate(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+            )
 
-                ai_analysis = llm.generate(
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                )
+            report["ai_analysis"] = ai_analysis
 
-                report["ai_analysis"] = ai_analysis
+        except Exception as exc:
 
-            except Exception as exc:
-
-                report["ai_analysis_error"] = str(exc)
+            report["ai_analysis_error"] = str(exc)
 
         return report
