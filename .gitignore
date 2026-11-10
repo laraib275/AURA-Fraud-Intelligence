@@ -14,6 +14,7 @@ env/
 # Environment variables
 .env
 .env.*
+!.env.example
 
 # VS Code
 .vscode/
@@ -25,6 +26,7 @@ Thumbs.db
 # Raw and processed datasets
 data/raw/**
 data/processed/**
+data/video/**
 
 # Model artifacts
 models/*.pkl
@@ -33,6 +35,12 @@ models/*.pickle
 
 # Logs
 *.log
+
+# Databases
+database/*.db
+database/*.db-wal
+database/*.db-shm
+database/*.sqlite
 
 .env
 .venv/

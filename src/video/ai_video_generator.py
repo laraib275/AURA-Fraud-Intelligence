@@ -22,7 +22,11 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-import xai_sdk
+
+try:
+    import xai_sdk
+except ImportError:
+    xai_sdk = None
 
 
 class AIVideoGenerationError(RuntimeError):
@@ -42,6 +46,11 @@ class AIVideoGenerator:
         output_dir: str = "data/video/ai_generated",
     ) -> None:
         load_dotenv()
+
+        if xai_sdk is None:
+            raise AIVideoGenerationError(
+                "xai-sdk is not installed. Please install it via 'pip install xai-sdk' to enable AI video generation."
+            )
 
         self.api_key = api_key or os.getenv("XAI_API_KEY")
 

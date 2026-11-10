@@ -26,11 +26,23 @@ class OpenAIClient:
         system_prompt: str,
         user_prompt: str,
     ) -> str:
+        try:
+            if hasattr(self.client, "responses") and callable(getattr(self.client.responses, "create", None)):
+                response = self.client.responses.create(
+                    model=self.model,
+                    instructions=system_prompt,
+                    input=user_prompt,
+                )
+                if hasattr(response, "output_text") and response.output_text:
+                    return response.output_text
+        except Exception:
+            pass
 
-        response = self.client.responses.create(
+        response = self.client.chat.completions.create(
             model=self.model,
-            instructions=system_prompt,
-            input=user_prompt,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
         )
-
-        return response.output_text
+        return response.choices[0].message.content or ""

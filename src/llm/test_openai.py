@@ -17,7 +17,10 @@ def main():
     )
 
     print("\n=== GROQ RESPONSE ===\n")
-    print(response)
+    try:
+        print(response)
+    except UnicodeEncodeError:
+        print(response.encode("ascii", "replace").decode("ascii"))
 
 
 if __name__ == "__main__":
